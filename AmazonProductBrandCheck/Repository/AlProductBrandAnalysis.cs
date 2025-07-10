@@ -10,7 +10,7 @@ namespace AmazonProductBrandCheck.Repository
     public class AlProductBrandAnalysis : IAlProductBrandAnalysis
     {
         private readonly HttpClient _httpClient;
-        private readonly string _geminiApiKey = "AIzaSyC6IFWFl_4EgKF4VoearSNo5nfsWvUoCjo";
+        private readonly string _geminiApiKey = "YOUR_API_KEY";
 
         public AlProductBrandAnalysis(HttpClient httpClient)
         {
