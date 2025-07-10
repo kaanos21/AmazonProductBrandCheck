@@ -2,15 +2,14 @@
 using System.Text.Json;
 using System.Text;
 using System.Net.Http;
-using System.Threading.Tasks;
-using System.Collections.Generic;
+using System.Net.Http.Headers;
 
 namespace AmazonProductBrandCheck.Repository
 {
     public class AlProductBrandAnalysis : IAlProductBrandAnalysis
     {
         private readonly HttpClient _httpClient;
-        private readonly string _geminiApiKey = "YOUR_API_KEY";
+        private readonly string _openAiApiKey = "YOUR-OPENAL-API-KEY-HERE"; 
 
         public AlProductBrandAnalysis(HttpClient httpClient)
         {
@@ -25,38 +24,52 @@ namespace AmazonProductBrandCheck.Repository
             {
                 try
                 {
-                    // Fotoğrafı indir ve base64'e çevir
                     byte[] imageBytes = await _httpClient.GetByteArrayAsync(product.PhotoUrl);
                     string base64Image = Convert.ToBase64String(imageBytes);
 
-                    // Gemini API isteği için body
                     var requestBody = new
                     {
-                        contents = new[]
+                        model = "gpt-4o",
+                        messages = new[]
                         {
-                            new {
-                                parts = new object[]
+                            new
+                            {
+                                role = "user",
+                                content = new object[]
                                 {
                                     new {
-                                        inlineData = new {
-                                            mimeType = "image/jpeg",
-                                            data = base64Image
+                                        type = "image_url",
+                                        image_url = new {
+                                            url = $"data:image/jpeg;base64,{base64Image}"
                                         }
                                     },
                                     new {
-                                        text = "Look at the product image. Based on its appearance, does it look branded, unbranded, or is it unclear? Answer with one of: Branded, Unbranded, Unknown."
+                                        type = "text",
+                                        text = "Look at the product image. Based on its appearance, does it look branded (e.g. has a logo or brand name), unbranded (generic with no logo), or is it unclear? Answer with one of: Branded, Unbranded, Unknown. Note: I want to buy and sell these products from China. If the product is bought from China and has a small logo or name on it, mark it as unbranded."
                                     }
                                 }
                             }
-                        }
+                        },
+                        max_tokens = 100
                     };
 
                     var json = JsonSerializer.Serialize(requestBody);
                     var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-                    // Güncel model endpoint'i
-                    var endpoint = $"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={_geminiApiKey}";
-                    var response = await _httpClient.PostAsync(endpoint, content);
+                    var request = new HttpRequestMessage
+                    {
+                        Method = HttpMethod.Post,
+                        RequestUri = new Uri("https://api.openai.com/v1/chat/completions"),
+                        Headers =
+                        {
+                            { "Authorization", $"Bearer {_openAiApiKey}" }
+                        },
+                        Content = content
+                    };
+
+                    content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+                    var response = await _httpClient.SendAsync(request);
                     var responseBody = await response.Content.ReadAsStringAsync();
 
                     BrandStatus status = BrandStatus.Unknown;
@@ -65,30 +78,27 @@ namespace AmazonProductBrandCheck.Repository
                     if (response.IsSuccessStatusCode)
                     {
                         var jsonDoc = JsonDocument.Parse(responseBody);
-                        if (jsonDoc.RootElement.TryGetProperty("candidates", out var candidates) &&
-                            candidates.GetArrayLength() > 0 &&
-                            candidates[0].TryGetProperty("content", out var contentElement) &&
-                            contentElement.TryGetProperty("parts", out var parts) &&
-                            parts.GetArrayLength() > 0 &&
-                            parts[0].TryGetProperty("text", out var textElement))
-                        {
-                            resultText = textElement.GetString();
+                        var answer = jsonDoc.RootElement
+                            .GetProperty("choices")[0]
+                            .GetProperty("message")
+                            .GetProperty("content")
+                            .GetString();
 
-                            status = resultText.ToLower() switch
-                            {
-                                var s when s.Contains("branded") => BrandStatus.Branded,
-                                var s when s.Contains("unbranded") => BrandStatus.Unbranded,
-                                _ => BrandStatus.Unknown
-                            };
-                        }
+                        resultText = answer;
+                        var normalized = resultText.Trim().ToLowerInvariant();
+
+                        if (normalized.Contains("unbranded"))
+                            status = BrandStatus.Unbranded;
+                        else if (normalized.Contains("branded"))
+                            status = BrandStatus.Branded;
+                        else if (normalized.Contains("unknown") || normalized.Contains("unclear") || normalized.Contains("not sure"))
+                            status = BrandStatus.Unknown;
                         else
-                        {
-                            resultText = "No text content found in Gemini response.";
-                        }
+                            status = BrandStatus.Unknown;
                     }
                     else
                     {
-                        resultText = $"Gemini API error: {response.StatusCode}, Body: {responseBody}";
+                        resultText = $"OpenAI API error: {response.StatusCode}, Body: {responseBody}";
                     }
 
                     results.Add(new ProductBrandResult
